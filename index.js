@@ -1,4 +1,3 @@
-// index.js
 require('dotenv').config();
 const {
   Client, GatewayIntentBits, Partials, REST, Routes,
@@ -6,8 +5,8 @@ const {
   AttachmentBuilder, Events
 } = require('discord.js');
 const Database = require('better-sqlite3');
+const express = require('express');
 
-// ====== CLIENTE
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -17,7 +16,6 @@ const client = new Client({
   partials: [Partials.GuildMember],
 });
 
-// ====== DB
 const db = new Database('presencia.db');
 db.pragma('journal_mode = WAL');
 
@@ -104,7 +102,6 @@ const q = {
   isViewer: db.prepare(`SELECT 1 FROM viewers WHERE guild_id=@guild_id AND user_id=@user_id`),
 };
 
-// ====== UTILS
 const MS = 1000, MIN = 60 * MS, H = 60 * MIN;
 
 function dayStart(ms) { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime(); }
@@ -137,7 +134,6 @@ function isAdmin(member) {
 }
 function isAllowedViewer(gid, uid) { return !!q.isViewer.get({ guild_id: gid, user_id: uid }); }
 
-// -------- Zona horaria consistente (LOCAL configurable)
 const TIMEZONE = process.env.TIMEZONE || 'America/Lima';
 const LOCALE = process.env.LOCALE || 'es-PE';
 
@@ -162,7 +158,6 @@ function fmtLocalTime(ms) {
   }).format(new Date(ms));
 }
 
-// Fechas: soporta -7d/-12h/-30m, ISO, y DD/MM/YYYY
 function parseDateOrRel(input, asEnd = false, fallback = null) {
   if (!input) return fallback;
   const rel = input.match(/^-(\d+)([dhm])$/i);
@@ -182,7 +177,6 @@ function parseDateOrRel(input, asEnd = false, fallback = null) {
   return fallback;
 }
 
-// Devuelve segmentos facturables por día aplicando horario/break
 function billableByDay(userId, guildId, segStart, segEnd) {
   const out = [];
   const sch = q.getSchedule.get({ guild_id: guildId, user_id: userId });
@@ -211,14 +205,13 @@ function billableByDay(userId, guildId, segStart, segEnd) {
   return out;
 }
 
-// Agregación pura (sin texto) por usuario/canal/día
 function aggregatePure(guildId, from, to, userIdOrNull) {
   let rows = [];
   try {
     rows = q.listSessionsInRange.all({ guild_id: guildId, from, to, user_id: userIdOrNull });
   } catch (e) { console.error('SQLite listSessionsInRange:', e); rows = []; }
 
-  const perUser = new Map(); // uid -> { total, perChannel:Map, perDay:Map, perDayChannel:Map, intervals:[] }
+  const perUser = new Map();
   for (const r of rows) {
     const startedAt = Number(r.started_at);
     const endedAt = r.ended_at == null ? null : Number(r.ended_at);
@@ -251,7 +244,6 @@ function aggregatePure(guildId, from, to, userIdOrNull) {
   return perUser;
 }
 
-// Resolver nombres visibles y rol más alto
 async function resolveMembersInfo(guildId, userIds) {
   const res = new Map();
   const g = client.guilds.cache.get(guildId);
@@ -267,7 +259,6 @@ async function resolveMembersInfo(guildId, userIds) {
   return res;
 }
 
-// ====== SLASH COMMANDS
 const commands = [
   new SlashCommandBuilder()
     .setName('entrada')
@@ -318,12 +309,11 @@ const commands = [
     .addSubcommand(sc => sc.setName('list').setDescription('Listar viewers autorizados')),
 ].map(c => c.toJSON());
 
-// ====== REGISTRO DE COMANDOS
 client.once(Events.ClientReady, async () => {
   console.log(`Conectado como ${client.user.tag}`);
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
   try {
-    await rest.put(Routes.applicationCommands(process.env.CLIENT_ID), { body: [] }); // limpia globales
+    await rest.put(Routes.applicationCommands(process.env.CLIENT_ID), { body: [] });
     if (!process.env.GUILD_ID) return console.error('Falta GUILD_ID en .env');
     await rest.put(
       Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID),
@@ -335,7 +325,6 @@ client.once(Events.ClientReady, async () => {
   }
 });
 
-// ====== VOICE (auto sesiones)
 client.on(Events.VoiceStateUpdate, (oldS, newS) => {
   const guildId = newS.guild.id;
   const userId = newS.id;
@@ -359,7 +348,6 @@ client.on(Events.VoiceStateUpdate, (oldS, newS) => {
   }
 });
 
-// ====== INTERACCIONES
 client.on(Events.InteractionCreate, async (ix) => {
   if (!ix.isChatInputCommand()) return;
   if (!ix.inGuild()) { await ix.reply({ ephemeral: true, content: '❌ Este bot funciona dentro de un servidor.' }); return; }
@@ -371,7 +359,6 @@ client.on(Events.InteractionCreate, async (ix) => {
   };
 
   try {
-    // ---- ENTRADA (usuario opcional)
     if (name === 'entrada') {
       const target = ix.options.getUser('usuario') || ix.user;
       if (target.id !== ix.user.id && !isAdmin(ix.member)) {
@@ -385,7 +372,6 @@ client.on(Events.InteractionCreate, async (ix) => {
       return;
     }
 
-    // ---- SALIDA (usuario opcional)
     if (name === 'salida') {
       const target = ix.options.getUser('usuario') || ix.user;
       if (target.id !== ix.user.id && !isAdmin(ix.member)) {
@@ -398,7 +384,6 @@ client.on(Events.InteractionCreate, async (ix) => {
       return;
     }
 
-    // ---- REPORTE
     if (name === 'reporte') {
       await ix.deferReply({ ephemeral: false });
 
@@ -406,7 +391,6 @@ client.on(Events.InteractionCreate, async (ix) => {
       const fecha = ix.options.getString('fecha');
       const now = Date.now();
 
-      // Rango
       let from = parseDateOrRel(ix.options.getString('desde'), false, null);
       let to   = parseDateOrRel(ix.options.getString('hasta'), true,  null);
       if (!from && !to && fecha) {
@@ -423,7 +407,6 @@ client.on(Events.InteractionCreate, async (ix) => {
       const canAdmin  = isAdmin(ix.member);
       const canViewer = canAdmin || isAllowedViewer(ix.guildId, callerId);
 
-      // Si pide otro usuario o general sin permiso → limitar a su propio id
       let userIdOrNull = userOpt?.id ?? null;
       if ((!userOpt) === true && !canViewer) {
         userIdOrNull = callerId;
@@ -435,7 +418,6 @@ client.on(Events.InteractionCreate, async (ix) => {
       const uids = [...perUser.keys()];
       const infoMap = await resolveMembersInfo(ix.guildId, uids);
 
-      // texto
       const lines = [];
       for (const [uid, data] of perUser) {
         const info = infoMap.get(uid) || { name: `Usuario ${uid}`, topRole: '—' };
@@ -474,14 +456,12 @@ client.on(Events.InteractionCreate, async (ix) => {
       const header = `**Reporte de presencia**\nPeriodo: ${rangoCab}\n\n`;
       const contentText = (perUser.size ? header + lines.join('\n') : header + 'Sin datos en el periodo seleccionado.');
 
-      // Excel: solo Admin/Viewer
       let wantExcel = ix.options.getBoolean('excel') ?? false;
       if (!canViewer) wantExcel = false;
 
       if (!wantExcel) {
         await ix.editReply({ content: contentText });
       } else {
-        // ----- Construir Excel (CSV con ; y BOM UTF-8, encabezados en español)
         const csv = [];
         csv.push([
           'fecha', 'nombre', 'rol', 'horario_inicio', 'horario_fin',
@@ -498,7 +478,6 @@ client.on(Events.InteractionCreate, async (ix) => {
           const breakStart = br ? minutesToHHMM(br.break_start_min)  : '';
           const breakEnd   = br ? minutesToHHMM(br.break_end_min)    : '';
 
-          // Totales por día
           for (const [dStart, ms] of [...data.perDay.entries()].sort((a,b)=>a[0]-b[0])) {
             csv.push([
               fmtLocalDate(dStart),
@@ -507,7 +486,7 @@ client.on(Events.InteractionCreate, async (ix) => {
               fmtLocal(from), fmtLocal(to)
             ]);
           }
-          // Intervalos
+
           for (const iv of data.intervals) {
             const cname = iv.channel_id === 'manual'
               ? 'Manual'
@@ -542,7 +521,6 @@ client.on(Events.InteractionCreate, async (ix) => {
       return;
     }
 
-    // ---- Configuración
     if (name === 'config_horario') {
       const target = ix.options.getUser('usuario') || ix.user;
       if (target.id !== ix.user.id && !isAdmin(ix.member)) {
@@ -610,8 +588,23 @@ client.on(Events.InteractionCreate, async (ix) => {
   }
 });
 
-// Logs
 process.on('unhandledRejection', (r) => console.error('unhandledRejection:', r));
 process.on('uncaughtException', (e) => console.error('uncaughtException:', e));
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.get('/', (req, res) => {
+  res.json({
+    status: 'online',
+    bot: client.user?.tag || 'iniciando...',
+    uptime_seconds: Math.floor(process.uptime()),
+    timestamp: new Date().toISOString()
+  });
+});
+
+app.listen(PORT, () => {
+  console.log(`Servidor HTTP escuchando en puerto ${PORT}`);
+});
 
 client.login(process.env.DISCORD_TOKEN);
